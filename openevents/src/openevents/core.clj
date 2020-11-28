@@ -33,23 +33,30 @@
   (a/close! subscription-binder))
 
 (defn bytes->string [b]
-  (try
-    (new String b)
-    (catch Exception e
-      (log/error b e))))
+  (new String b))
 
 (defn split-event [e]
   (clojure.string/split e #"::"))
 
-(defn has-topic [[_ t]]
-  t)
-
 (def parse-event (comp split-event bytes->string))
+
 (defn serialize-event [evt]
   (as-> evt $
         (interpose "::" $)
         (reduce str $)
         (str $ "\n")))
+
+(defn xf-input [id output-ch]
+  (let [ch-meta {::id        id
+                 ::output-ch output-ch}]
+    (comp (map parse-event)
+          (map #(apply vector id %))
+          (filter second)
+          (map (fn [e] (log/debug e) e))
+          (map #(with-meta % ch-meta)))))
+
+(def xf-output
+  (map serialize-event))
 
 (defn subscriber-handler [client info]
   (let [id-chan (a/chan)]
@@ -57,19 +64,13 @@
       (if-let [id (a/alt!
                     id-chan ([x] (->> x parse-event first (str "@")))
                     (a/timeout 3000) nil)]
-        (let [out-ch (a/chan 10 (map serialize-event))
-              ch-meta {::output-ch out-ch
-                           ::id id}
-              in-ch  (a/chan 1 (comp (map parse-event)
-                                     (map #(apply vector id %))
-                                     (filter has-topic)
-                                     (map (fn [e] (log/debug e) e))
-                                     (map #(with-meta % ch-meta))))]
+        (let [out-ch (a/chan 10 xf-output)
+              in-ch (a/chan 1 (xf-input id out-ch))]
           (log/debug "connected" id info)
           (s/on-closed client
                        #(do (a/close! in-ch)
                             (a/close! out-ch)
-                            (log/debug "closing" info)))
+                            (log/debug "closing" id)))
           (a/close! id-chan)
           (a/pipe in-ch pub-in false)
           (a/sub pub id out-ch)
@@ -80,8 +81,7 @@
           (s/close! client))))
     (s/connect client (s/->sink id-chan))))
 
-(m/defstate
-  server
+(m/defstate server
   :start
   (tcp/start-server subscriber-handler {:port 1738})
   :stop
@@ -102,4 +102,5 @@
 (defn -main
   "I don't do a whole lot ... yet."
   [& args]
-  (println "Hello, World!"))
+  (log/info "starting server")
+  (m/start))
