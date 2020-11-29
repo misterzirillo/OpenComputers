@@ -32,13 +32,10 @@
   :stop
   (a/close! subscription-binder))
 
-(defn bytes->string [b]
-  (new String b))
-
-(defn split-event [e]
-  (clojure.string/split e #"::"))
-
-(def parse-event (comp split-event bytes->string))
+(defn deserialize-event [e]
+  (as-> e $
+        (new String $)
+        (clojure.string/split $ #"::")))
 
 (defn serialize-event [evt]
   (as-> evt $
@@ -49,7 +46,7 @@
 (defn xf-input [id output-ch]
   (let [ch-meta {::id        id
                  ::output-ch output-ch}]
-    (comp (map parse-event)
+    (comp (map deserialize-event)
           (map #(apply vector id %))
           (filter second)
           (map (fn [e] (log/debug e) e))
@@ -62,7 +59,7 @@
   (let [id-chan (a/chan)]
     (a/go
       (if-let [id (a/alt!
-                    id-chan ([x] (->> x parse-event first (str "@")))
+                    id-chan ([x] (->> x deserialize-event first (str "@")))
                     (a/timeout 3000) nil)]
         (let [out-ch (a/chan 10 xf-output)
               in-ch (a/chan 1 (xf-input id out-ch))]
@@ -88,16 +85,17 @@
   (.close server))
 
 (defn client
-  [host port client-id]
-  (let [c @(tcp/client {:host host, :port port})]
-    @(s/put! c client-id)
-    ;; keepalive
-    (a/go-loop [i 0]
-      (a/<! (a/timeout 30000))
-      (when-not (s/closed? c)
-        (s/put! c (str "heartbeat::" i))
-        (recur (inc i))))
-    c))
+  ([] (client "localhost" 1738 "repl"))
+  ([host port client-id]
+   (let [c @(tcp/client {:host host :port port})]
+     @(s/put! c client-id)
+     ;; keepalive
+     (a/go-loop [i 0]
+       (a/<! (a/timeout 30000))
+       (when-not (s/closed? c)
+         (s/put! c (str "heartbeat::" i))
+         (recur (inc i))))
+     c)))
 
 (defn -main
   "I don't do a whole lot ... yet."
