@@ -19,18 +19,22 @@
 
 (m/defstate subscription-binder
   :start
-  (let [req-ch (a/chan)]
-    (a/go-loop []
-      (when-let [subscription (a/<! req-ch)]
-        (let [[_ _ topic] subscription
-              {::keys [id output-ch]} (meta subscription)]
-          (log/debug "subscribing" id topic)
-          (a/sub pub topic output-ch)
-          (recur))))
-    (a/sub pub "subscribe" req-ch)
-    req-ch)
+  (do
+    (log/info "starting subscription binder service")
+    (let [req-ch (a/chan)]
+      (a/go-loop []
+        (when-let [subscription (a/<! req-ch)]
+          (let [[_ _ topic] subscription
+                {::keys [id output-ch]} (meta subscription)]
+            (log/debug "subscribing" id topic)
+            (a/sub pub topic output-ch)
+            (recur))))
+      (a/sub pub "subscribe" req-ch)
+      req-ch))
   :stop
-  (a/close! subscription-binder))
+  (do
+    (log/info "stopping subscription binder service")
+    (a/close! subscription-binder)))
 
 (defn deserialize-event [e]
   (as-> e $
@@ -63,7 +67,7 @@
                     (a/timeout 3000) nil)]
         (let [out-ch (a/chan 10 xf-output)
               in-ch (a/chan 1 (xf-input id out-ch))]
-          (log/debug "connected" id info)
+          (log/info "connected" id info)
           (s/on-closed client
                        #(do (a/close! in-ch)
                             (a/close! out-ch)
@@ -78,11 +82,15 @@
           (s/close! client))))
     (s/connect client (s/->sink id-chan))))
 
-(m/defstate server
+(m/defstate ^{:on-reload :noop} server
   :start
-  (tcp/start-server subscriber-handler {:port 1738})
+  (do
+    (log/info "starting tcp server")
+    (tcp/start-server subscriber-handler {:port 1738}))
   :stop
-  (.close server))
+  (do
+    (log/info "stopping tcp server")
+    (.close server)))
 
 (defn client
   ([] (client "localhost" 1738 "repl"))
@@ -99,6 +107,11 @@
 
 (defn -main
   "I don't do a whole lot ... yet."
-  [& args]
-  (log/info "starting server")
-  (m/start))
+  [level & _]
+  (when-let [level (keyword level)]
+    (log/info "using logging level" level)
+    (log/set-level! level))
+  (log/info (m/start))
+  (.addShutdownHook (Runtime/getRuntime)
+                    (Thread. #(log/info (m/stop))))
+  (-> (Thread/currentThread) .join))
